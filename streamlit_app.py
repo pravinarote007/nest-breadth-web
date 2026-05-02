@@ -44,10 +44,6 @@ st.markdown(
 )
 
 st.title("NIFTY F&O Breadth")
-st.caption(
-    "Live-ish breadth across the NSE F&O cash universe · Data source: "
-    "Yahoo Finance · ~15-min delayed · No login, no broker session."
-)
 
 
 # --- Auto-rerun every 60 seconds ---------------------------------------
@@ -232,18 +228,6 @@ last_poll = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
 with st.spinner("Computing breadth..."):
     row, today_ohlc, yesterday_ohlc, missing, debug = fetch_breadth()
 
-
-# --- Section 1: top summary metrics (always visible) -------------------
-
-c1, c2, c3, c4, c5 = st.columns(5)
-c1.metric("Bull score", f"{row.score_bull:.1f}",
-          delta=f"{row.score_bull - row.score_bear:+.1f} net")
-c2.metric("Bear score", f"{row.score_bear:.1f}")
-c3.metric("Above prior close", f"{row.above_close_pct:.1f}%")
-c4.metric("Bullish breakouts", f"{row.bullish_bo_pct:.1f}%")
-c5.metric("Universe", f"{row.universe_size}",
-          delta=f"-{len(missing)} missing" if missing else None,
-          delta_color="off" if not missing else "inverse")
 
 st.caption(f"Last poll: {last_poll} IST · Auto-refresh every {POLL_SECONDS}s")
 
