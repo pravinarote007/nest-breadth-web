@@ -32,6 +32,7 @@ from direction_classifier import (
     DirectionVerdict,
 )
 from universe import load_universe
+import local_store
 
 UNIVERSE_CSV = Path(__file__).parent / "universe.csv"
 POLL_SECONDS = 60
@@ -337,6 +338,29 @@ st.caption(f"Last poll: {last_poll} IST · Auto-refresh every {POLL_SECONDS}s")
 
 if "breadth_history" not in st.session_state:
     st.session_state.breadth_history = []
+    # Hydrate from local DuckDB on first page load (no-op on Streamlit
+    # Cloud where the file doesn't exist).
+    cached_df = local_store.load_today()
+    if not cached_df.empty:
+        for _, r in cached_df.iterrows():
+            ts_val = r.get("ts")
+            try:
+                ts_ist = pd.Timestamp(ts_val).tz_convert(IST)
+            except (TypeError, ValueError, AttributeError):
+                ts_ist = pd.Timestamp(ts_val)
+            st.session_state.breadth_history.append({
+                "Time": ts_ist.strftime("%H:%M:%S"),
+                "Bull BO %": float(r["d_bullish_bo_pct"] or 0.0),
+                "Abv Close %": float(r["d_above_close_pct"] or 0.0),
+                "Green Range %": float(r["d_green_range_pct"] or 0.0),
+                "Today High#": int(r["d_today_high_count"] or 0),
+                "Score Bull": float(r["d_score_bull"] or 0.0),
+                "Bear BO %": float(r["d_bearish_bo_pct"] or 0.0),
+                "Bel Close %": float(r["d_below_close_pct"] or 0.0),
+                "Red Range %": float(r["d_red_range_pct"] or 0.0),
+                "Today Low#": int(r["d_today_low_count"] or 0),
+                "Score Bear": float(r["d_score_bear"] or 0.0),
+            })
 
 if not today_ohlc.empty:
     # Column order matches WPF Live Breadth (Daily tab): time, then all
@@ -362,6 +386,22 @@ if not today_ohlc.empty:
         # Cap history at ~500 rows so a long open session doesn't bloat memory.
         if len(st.session_state.breadth_history) > 500:
             st.session_state.breadth_history = st.session_state.breadth_history[-500:]
+        # Persist to local DuckDB (no-op on Streamlit Cloud).
+        now_ist = datetime.now(IST)
+        local_store.upsert_row(
+            poll_ts=now_ist, poll_date=now_ist.date(),
+            bullish_bo_pct=row.bullish_bo_pct,
+            above_close_pct=row.above_close_pct,
+            green_range_pct=row.green_range_pct,
+            bearish_bo_pct=row.bearish_bo_pct,
+            below_close_pct=row.below_close_pct,
+            red_range_pct=row.red_range_pct,
+            today_high_count=row.today_high_count,
+            today_low_count=row.today_low_count,
+            score_bull=row.score_bull,
+            score_bear=row.score_bear,
+            universe_size=row.universe_size,
+        )
 
 
 # --- Section 2: tabs -- F&O breadth rows | Per-symbol direction --------
