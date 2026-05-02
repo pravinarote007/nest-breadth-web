@@ -12,7 +12,7 @@ import this module to compute identical breadth rows.
 from __future__ import annotations
 
 from dataclasses import dataclass, asdict
-from typing import Any
+from typing import Any, Optional
 
 import pandas as pd
 
@@ -41,6 +41,35 @@ class BreadthRow:
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+@dataclass(frozen=True)
+class ExtendedBreadthRow:
+    """A breadth snapshot with BOTH daily and (optional) weekly blocks
+    — same shape the production breadth_grid carries. The
+    direction-classifier in :mod:`nest_breadth_lite.direction_classifier`
+    needs both blocks to render the WPF-style sentiment cards
+    (Overall / Daily / Weekly / Options)."""
+    daily: "BreadthRow"
+    weekly: Optional["BreadthRow"] = None
+
+
+def compute_breadth_row_extended(
+    today_ohlc: pd.DataFrame,
+    yesterday_ohlc: pd.DataFrame,
+    last_week_ohlc: Optional[pd.DataFrame] = None,
+    *,
+    band_bps: float = _TODAY_EXTREME_BAND_BPS,
+) -> ExtendedBreadthRow:
+    """Compute daily + (optionally) weekly breadth blocks in one call.
+    Mirrors :func:`nest.engine.breadth.compute_for_date`'s output shape.
+    Pass ``last_week_ohlc=None`` to skip the weekly block (the
+    classifier then degrades the Overall verdict to daily-only)."""
+    daily = compute_breadth_row(today_ohlc, yesterday_ohlc, band_bps=band_bps)
+    weekly = None
+    if last_week_ohlc is not None and not last_week_ohlc.empty:
+        weekly = compute_breadth_row(today_ohlc, last_week_ohlc, band_bps=band_bps)
+    return ExtendedBreadthRow(daily=daily, weekly=weekly)
 
 
 def compute_breadth_row(

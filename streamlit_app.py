@@ -23,7 +23,14 @@ import pandas as pd
 import streamlit as st
 import yfinance as yf
 
-from breadth_compute import compute_breadth_row, BreadthRow
+from breadth_compute import (
+    compute_breadth_row, compute_breadth_row_extended,
+    BreadthRow, ExtendedBreadthRow,
+)
+from direction_classifier import (
+    classify_daily, classify_weekly, classify_overall, classify_option_selling,
+    DirectionVerdict,
+)
 from universe import load_universe
 
 UNIVERSE_CSV = Path(__file__).parent / "universe.csv"
@@ -61,7 +68,7 @@ except ImportError:
 # --- Data fetch (cached for 60s) ---------------------------------------
 
 @st.cache_data(ttl=POLL_SECONDS, show_spinner="Polling Yahoo Finance...")
-def fetch_breadth() -> tuple[BreadthRow, pd.DataFrame, pd.DataFrame, list[str], dict]:
+def fetch_breadth() -> tuple[ExtendedBreadthRow, pd.DataFrame, pd.DataFrame, list[str], dict]:
     """One yf.download call → today's running + yesterday's OHLC →
     compute_breadth_row. Returns (row, today_ohlc, yesterday_ohlc,
     missing_symbols, debug_info).
@@ -81,7 +88,7 @@ def fetch_breadth() -> tuple[BreadthRow, pd.DataFrame, pd.DataFrame, list[str], 
 
     df = yf.download(
         tickers=tickers,
-        period="5d", interval="1d",
+        period="15d", interval="1d",
         progress=False, threads=False,
         auto_adjust=False,
         # default group_by="column" → field-first multi-index
@@ -101,10 +108,14 @@ def fetch_breadth() -> tuple[BreadthRow, pd.DataFrame, pd.DataFrame, list[str], 
 
     today_rows: dict[str, tuple] = {}
     yesterday_rows: dict[str, tuple] = {}
+    last_week_rows: dict[str, tuple] = {}
     missing: list[str] = []
 
     if df is None or df.empty:
-        return (compute_breadth_row(pd.DataFrame(), pd.DataFrame()),
+        return (ExtendedBreadthRow(
+                    daily=compute_breadth_row(pd.DataFrame(), pd.DataFrame()),
+                    weekly=None,
+                ),
                 pd.DataFrame(), pd.DataFrame(), tickers_list, debug)
 
     # Detect column layout. Two possibilities:
@@ -164,6 +175,24 @@ def fetch_breadth() -> tuple[BreadthRow, pd.DataFrame, pd.DataFrame, list[str], 
                 )
             except (KeyError, TypeError, ValueError):
                 pass
+        # Last-week baseline: ~5 trading days back (or whatever the
+        # earliest available row is, capped at 6 back).
+        if len(idx) >= 6:
+            wk_dt = idx[-6]
+        elif len(idx) >= 3:
+            wk_dt = idx[0]
+        else:
+            wk_dt = None
+        if wk_dt is not None:
+            try:
+                last_week_rows[u.symbol] = (
+                    float(open_s.loc[wk_dt]),
+                    float(high_s.loc[wk_dt]),
+                    float(low_s.loc[wk_dt]),
+                    float(close_s.loc[wk_dt]),
+                )
+            except (KeyError, TypeError, ValueError):
+                pass
 
     today_ohlc = pd.DataFrame.from_dict(
         today_rows, orient="index", columns=["open", "high", "low", "close"],
@@ -171,11 +200,18 @@ def fetch_breadth() -> tuple[BreadthRow, pd.DataFrame, pd.DataFrame, list[str], 
     yesterday_ohlc = pd.DataFrame.from_dict(
         yesterday_rows, orient="index", columns=["open", "high", "low", "close"],
     )
+    last_week_ohlc = pd.DataFrame.from_dict(
+        last_week_rows, orient="index", columns=["open", "high", "low", "close"],
+    )
     debug["resolved_today"] = len(today_rows)
     debug["resolved_yesterday"] = len(yesterday_rows)
+    debug["resolved_last_week"] = len(last_week_rows)
 
-    row = compute_breadth_row(today_ohlc, yesterday_ohlc)
-    return row, today_ohlc, yesterday_ohlc, missing, debug
+    ext = compute_breadth_row_extended(
+        today_ohlc, yesterday_ohlc,
+        last_week_ohlc if not last_week_ohlc.empty else None,
+    )
+    return ext, today_ohlc, yesterday_ohlc, missing, debug
 
 
 # --- Color helpers (matplotlib-free) -----------------------------------
@@ -226,7 +262,66 @@ def _net_color(v: float) -> str:
 last_poll = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
 
 with st.spinner("Computing breadth..."):
-    row, today_ohlc, yesterday_ohlc, missing, debug = fetch_breadth()
+    ext, today_ohlc, yesterday_ohlc, missing, debug = fetch_breadth()
+
+row = ext.daily
+
+
+# --- Section 1: 4 sentiment cards (Overall / Daily / Weekly / Options) ---
+
+def _render_verdict_card(col, title: str, verdict: DirectionVerdict) -> None:
+    col.markdown(
+        f"""
+<div style="border:1px solid #2a2a2a;border-radius:8px;padding:10px 12px;
+            background:#161616;min-height:78px;">
+  <div style="font-size:11px;letter-spacing:0.08em;color:#9CA3AF;
+              text-transform:uppercase;margin-bottom:6px;">{title}</div>
+  <div style="background:{verdict.color};color:white;
+              padding:6px 10px;border-radius:6px;font-weight:600;
+              font-size:14px;display:inline-block;">{verdict.label}</div>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+
+
+if not today_ohlc.empty:
+    overall_v = classify_overall(ext)
+    daily_v = classify_daily(ext.daily)
+    weekly_v = classify_weekly(ext.weekly) if ext.weekly is not None else None
+    options_v = classify_option_selling(ext.daily)
+
+    cc1, cc2, cc3, cc4 = st.columns(4)
+    _render_verdict_card(cc1, "Overall", overall_v)
+    _render_verdict_card(cc2, "Daily", daily_v)
+    if weekly_v is not None:
+        _render_verdict_card(cc3, "Weekly", weekly_v)
+    else:
+        cc3.markdown(
+            """
+<div style="border:1px solid #2a2a2a;border-radius:8px;padding:10px 12px;
+            background:#161616;min-height:78px;">
+  <div style="font-size:11px;letter-spacing:0.08em;color:#9CA3AF;
+              text-transform:uppercase;margin-bottom:6px;">Weekly</div>
+  <div style="background:#9CA3AF;color:white;padding:6px 10px;
+              border-radius:6px;font-weight:600;font-size:14px;
+              display:inline-block;">N/A · need 5+ days</div>
+</div>
+""",
+            unsafe_allow_html=True,
+        )
+    _render_verdict_card(cc4, "Options · Buy / Sell", options_v)
+
+    # Combined reasoning bullets, mirroring the WPF live-breadth pane.
+    bullet_lines: list[str] = []
+    bullet_lines.extend(overall_v.reasons)
+    if bullet_lines:
+        st.markdown(
+            "<div style='margin-top:8px;color:#cccccc;font-size:13px;'>"
+            + "".join(f"• {r}<br/>" for r in bullet_lines)
+            + "</div>",
+            unsafe_allow_html=True,
+        )
 
 
 st.caption(f"Last poll: {last_poll} IST · Auto-refresh every {POLL_SECONDS}s")
