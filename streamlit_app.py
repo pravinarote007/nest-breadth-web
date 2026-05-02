@@ -358,9 +358,7 @@ if missing:
 # Disclaimer footer.
 st.markdown("---")
 st.caption(
-    "**Disclaimer**: Free educational view powered by Yahoo Finance, "
-    "delayed ~15 minutes from the live tape. Not for live trading "
-    "triggers. Use a broker WebSocket for real-time signals. "
-    "Yahoo can rate-limit / throttle; the app may show stale data "
-    "during such periods."
+    "**Disclaimer**: Free educational view powered for Traders. "
+    "Not for live trading triggers. Use a broker WebSocket for "
+    "real-time signals."
 )
