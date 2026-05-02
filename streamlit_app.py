@@ -15,6 +15,9 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
+
+IST = ZoneInfo("Asia/Kolkata")
 
 import pandas as pd
 import streamlit as st
@@ -224,7 +227,7 @@ def _net_color(v: float) -> str:
 
 # --- Fetch + render ----------------------------------------------------
 
-last_poll = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+last_poll = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
 
 with st.spinner("Computing breadth..."):
     row, today_ohlc, yesterday_ohlc, missing, debug = fetch_breadth()
@@ -242,7 +245,7 @@ c5.metric("Universe", f"{row.universe_size}",
           delta=f"-{len(missing)} missing" if missing else None,
           delta_color="off" if not missing else "inverse")
 
-st.caption(f"Last poll: {last_poll} · Auto-refresh every {POLL_SECONDS}s")
+st.caption(f"Last poll: {last_poll} IST · Auto-refresh every {POLL_SECONDS}s")
 
 
 # --- Append to in-session breadth-row history --------------------------
@@ -257,20 +260,20 @@ if "breadth_history" not in st.session_state:
     st.session_state.breadth_history = []
 
 if not today_ohlc.empty:
+    # Column order matches WPF Live Breadth (Daily tab): time, then all
+    # bull-side metrics together, then all bear-side metrics together.
     history_row = {
-        "Time": last_poll[-8:],    # HH:MM:SS for compactness
-        "Bull": row.score_bull,
-        "Bear": row.score_bear,
-        "Net (B−B)": row.score_bull - row.score_bear,
+        "Time": last_poll[-8:],            # HH:MM:SS
         "Bull BO %": row.bullish_bo_pct,
-        "Above close %": row.above_close_pct,
-        "Green range %": row.green_range_pct,
+        "Abv Close %": row.above_close_pct,
+        "Green Range %": row.green_range_pct,
+        "Today High#": row.today_high_count,
+        "Score Bull": row.score_bull,
         "Bear BO %": row.bearish_bo_pct,
-        "Below close %": row.below_close_pct,
-        "Red range %": row.red_range_pct,
-        "@ High": row.today_high_count,
-        "@ Low": row.today_low_count,
-        "Universe": row.universe_size,
+        "Bel Close %": row.below_close_pct,
+        "Red Range %": row.red_range_pct,
+        "Today Low#": row.today_low_count,
+        "Score Bear": row.score_bear,
     }
     # Avoid duplicating consecutive identical polls (cache hits during
     # the 60-sec TTL window will return the same row repeatedly).
@@ -308,16 +311,14 @@ with tab_breadth:
             st.json(debug)
     else:
         history_df = pd.DataFrame(st.session_state.breadth_history[::-1])
+        # Format mirrors the WPF Live Breadth grid (F2, 2-decimal).
+        bull_cols = ["Bull BO %", "Abv Close %", "Green Range %", "Score Bull"]
+        bear_cols = ["Bear BO %", "Bel Close %", "Red Range %", "Score Bear"]
         styled = history_df.style.format({
-            "Bull": "{:.1f}", "Bear": "{:.1f}", "Net (B−B)": "{:+.1f}",
-            "Bull BO %": "{:.1f}", "Above close %": "{:.1f}",
-            "Green range %": "{:.1f}", "Bear BO %": "{:.1f}",
-            "Below close %": "{:.1f}", "Red range %": "{:.1f}",
-        }).map(_score_color, subset=["Bull", "Bear"]) \
-          .map(_net_color, subset=["Net (B−B)"]) \
-          .map(_score_color, subset=["Bull BO %", "Above close %", "Green range %"]) \
+            **{c: "{:.2f}" for c in bull_cols + bear_cols},
+        }).map(_score_color, subset=bull_cols) \
           .map(lambda v: _score_color(100 - v) if pd.notna(v) else "",
-               subset=["Bear BO %", "Below close %", "Red range %"])
+               subset=bear_cols)
         st.dataframe(styled, use_container_width=True, height=540)
 
         st.caption(
