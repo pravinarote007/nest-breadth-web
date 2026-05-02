@@ -1,0 +1,381 @@
+"""NIFTY F&O Breadth — free Streamlit dashboard.
+
+Polls Yahoo Finance every 60s for the cash-universe daily-baseline
++ today's running OHLC, computes breadth in memory, and renders a
+heatmap. No DB, no API key, no broker session — runs unattended on
+Streamlit Cloud free tier.
+
+Caveats (shown in the UI banner too):
+- ~15-min delay vs reality (Yahoo's NSE feed is delayed).
+- Cold start when the app wakes from idle ~30 sec.
+- Coverage gaps for newly-added F&O constituents that lag Yahoo's
+  catalog.
+"""
+from __future__ import annotations
+
+from datetime import datetime
+from pathlib import Path
+
+import pandas as pd
+import streamlit as st
+import yfinance as yf
+
+from breadth_compute import compute_breadth_row, BreadthRow
+from universe import load_universe
+
+UNIVERSE_CSV = Path(__file__).parent / "universe.csv"
+POLL_SECONDS = 60
+
+
+# --- Page setup ---------------------------------------------------------
+
+st.set_page_config(
+    page_title="NIFTY F&O Breadth (free)",
+    page_icon="📊",
+    layout="wide",
+)
+
+st.markdown(
+    "<style>div.block-container{padding-top:2rem}</style>",
+    unsafe_allow_html=True,
+)
+
+st.title("NIFTY F&O Breadth")
+st.caption(
+    "Live-ish breadth across the NSE F&O cash universe · Data source: "
+    "Yahoo Finance · ~15-min delayed · No login, no broker session."
+)
+
+
+# --- Auto-rerun every 60 seconds ---------------------------------------
+
+try:
+    from streamlit_autorefresh import st_autorefresh
+    st_autorefresh(interval=POLL_SECONDS * 1000, key="poll-tick")
+except ImportError:
+    st.info(
+        "Install `streamlit-autorefresh` (in requirements.txt) for "
+        "auto-poll. Currently you'll need to refresh the page manually."
+    )
+
+
+# --- Data fetch (cached for 60s) ---------------------------------------
+
+@st.cache_data(ttl=POLL_SECONDS, show_spinner="Polling Yahoo Finance...")
+def fetch_breadth() -> tuple[BreadthRow, pd.DataFrame, pd.DataFrame, list[str], dict]:
+    """One yf.download call → today's running + yesterday's OHLC →
+    compute_breadth_row. Returns (row, today_ohlc, yesterday_ohlc,
+    missing_symbols, debug_info).
+
+    Uses field-first multi-index access (default ``group_by='column'``)
+    which is more robust than ticker-first across yfinance versions:
+
+        df["Close"]                  → wide DataFrame, columns=tickers
+        df["Close"]["RELIANCE.NS"]   → Series of closes for that ticker
+
+    Period is 5 days (not 2) so weekends + holidays still leave us
+    with at least 2 trading days in the window.
+    """
+    universe = load_universe(UNIVERSE_CSV)
+    tickers_list = [u.yfinance_ticker for u in universe]
+    tickers = " ".join(tickers_list)
+
+    df = yf.download(
+        tickers=tickers,
+        period="5d", interval="1d",
+        progress=False, threads=False,
+        auto_adjust=False,
+        # default group_by="column" → field-first multi-index
+    )
+
+    debug: dict = {
+        "yf_response_shape": list(df.shape) if df is not None else None,
+        "yf_columns_preview": [],
+        "tickers_requested": len(tickers_list),
+        "yf_returned_empty": df is None or df.empty,
+    }
+    if df is not None and not df.empty:
+        # Capture first ~10 column tuples for diagnostic display.
+        cols = list(df.columns)[:10]
+        debug["yf_columns_preview"] = [str(c) for c in cols]
+        debug["yf_columns_nlevels"] = df.columns.nlevels
+
+    today_rows: dict[str, tuple] = {}
+    yesterday_rows: dict[str, tuple] = {}
+    missing: list[str] = []
+
+    if df is None or df.empty:
+        return (compute_breadth_row(pd.DataFrame(), pd.DataFrame()),
+                pd.DataFrame(), pd.DataFrame(), tickers_list, debug)
+
+    # Detect column layout. Two possibilities:
+    #   1. Multi-index, field-first: df["Close"][ticker] → Series
+    #   2. Single-index (rare, single-ticker case): df["Close"] is a Series
+    is_multi = df.columns.nlevels > 1
+
+    def _series_for(ticker: str, field: str):
+        if is_multi:
+            try:
+                level0 = df[field]
+            except KeyError:
+                return None
+            if ticker in level0.columns:
+                return level0[ticker]
+            return None
+        # single-index: only happens when 1 ticker was requested AND yfinance
+        # collapsed the multi-index. Just return the single column.
+        return df[field] if field in df.columns else None
+
+    for u in universe:
+        yf_t = u.yfinance_ticker
+        close_s = _series_for(yf_t, "Close")
+        open_s = _series_for(yf_t, "Open")
+        high_s = _series_for(yf_t, "High")
+        low_s = _series_for(yf_t, "Low")
+        if close_s is None or close_s.dropna().empty:
+            missing.append(u.symbol)
+            continue
+        # Drop NaN rows (Yahoo sometimes returns a row of NaNs for
+        # holidays embedded in the period).
+        idx = close_s.dropna().index
+        if len(idx) == 0:
+            missing.append(u.symbol)
+            continue
+
+        last_dt = idx[-1]
+        try:
+            today_rows[u.symbol] = (
+                float(open_s.loc[last_dt]),
+                float(high_s.loc[last_dt]),
+                float(low_s.loc[last_dt]),
+                float(close_s.loc[last_dt]),
+            )
+        except (KeyError, TypeError, ValueError):
+            missing.append(u.symbol)
+            continue
+
+        if len(idx) >= 2:
+            prev_dt = idx[-2]
+            try:
+                yesterday_rows[u.symbol] = (
+                    float(open_s.loc[prev_dt]),
+                    float(high_s.loc[prev_dt]),
+                    float(low_s.loc[prev_dt]),
+                    float(close_s.loc[prev_dt]),
+                )
+            except (KeyError, TypeError, ValueError):
+                pass
+
+    today_ohlc = pd.DataFrame.from_dict(
+        today_rows, orient="index", columns=["open", "high", "low", "close"],
+    )
+    yesterday_ohlc = pd.DataFrame.from_dict(
+        yesterday_rows, orient="index", columns=["open", "high", "low", "close"],
+    )
+    debug["resolved_today"] = len(today_rows)
+    debug["resolved_yesterday"] = len(yesterday_rows)
+
+    row = compute_breadth_row(today_ohlc, yesterday_ohlc)
+    return row, today_ohlc, yesterday_ohlc, missing, debug
+
+
+# --- Color helpers (matplotlib-free) -----------------------------------
+
+
+def _pct_color(v, clamp: float = 3.0) -> str:
+    """Red→grey→green gradient. Clamps at ±``clamp`` percent."""
+    try:
+        v = float(v)
+    except (TypeError, ValueError):
+        return ""
+    if pd.isna(v):
+        return ""
+    clamped = max(-clamp, min(clamp, v))
+    if clamped >= 0:
+        t = clamped / clamp
+        r = int(60 + (34 - 60) * t)
+        g = int(70 + (197 - 70) * t)
+        b = int(60 + (94 - 60) * t)
+    else:
+        t = -clamped / clamp
+        r = int(60 + (239 - 60) * t)
+        g = int(70 + (68 - 70) * t)
+        b = int(60 + (68 - 60) * t)
+    return f"background-color: rgb({r},{g},{b}); color: white"
+
+
+def _score_color(v: float) -> str:
+    """Same scheme but on the 0..100 score scale."""
+    try:
+        v = float(v)
+    except (TypeError, ValueError):
+        return ""
+    if pd.isna(v):
+        return ""
+    # Center at 50 → grey; anchor green/red beyond ±25 from centre.
+    delta = v - 50.0
+    return _pct_color(delta / 25.0 * 3.0)    # rescale to ±3 range
+
+
+def _net_color(v: float) -> str:
+    """For the bull−bear net column (already centered at 0)."""
+    return _pct_color(v / 30.0 * 3.0)        # rescale ±30 → ±3
+
+
+# --- Fetch + render ----------------------------------------------------
+
+last_poll = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+with st.spinner("Computing breadth..."):
+    row, today_ohlc, yesterday_ohlc, missing, debug = fetch_breadth()
+
+
+# --- Section 1: top summary metrics (always visible) -------------------
+
+c1, c2, c3, c4, c5 = st.columns(5)
+c1.metric("Bull score", f"{row.score_bull:.1f}",
+          delta=f"{row.score_bull - row.score_bear:+.1f} net")
+c2.metric("Bear score", f"{row.score_bear:.1f}")
+c3.metric("Above prior close", f"{row.above_close_pct:.1f}%")
+c4.metric("Bullish breakouts", f"{row.bullish_bo_pct:.1f}%")
+c5.metric("Universe", f"{row.universe_size}",
+          delta=f"-{len(missing)} missing" if missing else None,
+          delta_color="off" if not missing else "inverse")
+
+st.caption(f"Last poll: {last_poll} · Auto-refresh every {POLL_SECONDS}s")
+
+
+# --- Append to in-session breadth-row history --------------------------
+#
+# Streamlit Cloud has no persistent disk, but session_state lives for
+# the user's open browser session. Each successful poll appends one
+# row → the F&O tab below shows the running history while the page
+# is open. State resets when the user closes the page or the app
+# sleeps for >30 min.
+
+if "breadth_history" not in st.session_state:
+    st.session_state.breadth_history = []
+
+if not today_ohlc.empty:
+    history_row = {
+        "Time": last_poll[-8:],    # HH:MM:SS for compactness
+        "Bull": row.score_bull,
+        "Bear": row.score_bear,
+        "Net (B−B)": row.score_bull - row.score_bear,
+        "Bull BO %": row.bullish_bo_pct,
+        "Above close %": row.above_close_pct,
+        "Green range %": row.green_range_pct,
+        "Bear BO %": row.bearish_bo_pct,
+        "Below close %": row.below_close_pct,
+        "Red range %": row.red_range_pct,
+        "@ High": row.today_high_count,
+        "@ Low": row.today_low_count,
+        "Universe": row.universe_size,
+    }
+    # Avoid duplicating consecutive identical polls (cache hits during
+    # the 60-sec TTL window will return the same row repeatedly).
+    if (not st.session_state.breadth_history
+            or st.session_state.breadth_history[-1]["Time"] != history_row["Time"]):
+        st.session_state.breadth_history.append(history_row)
+        # Cap history at ~500 rows so a long open session doesn't bloat memory.
+        if len(st.session_state.breadth_history) > 500:
+            st.session_state.breadth_history = st.session_state.breadth_history[-500:]
+
+
+# --- Section 2: tabs -- F&O breadth rows | Per-symbol direction --------
+
+tab_breadth, tab_symbols = st.tabs([
+    "📈 F&O Breadth (per-poll history)",
+    "🔢 Per-symbol direction",
+])
+
+
+# === TAB 1: row-per-poll breadth grid (mirrors WPF Live Breadth) =======
+with tab_breadth:
+    st.markdown("**Newest poll at the top.** One row per poll cycle. "
+                "Scroll back to see how breadth evolved through the session.")
+
+    if not st.session_state.breadth_history:
+        if debug.get("yf_returned_empty"):
+            st.error(
+                "Yahoo Finance returned an **empty response**. Most likely "
+                "causes: rate-limit, network issue, or invalid tickers. "
+                "Try again in 1–2 minutes."
+            )
+        else:
+            st.info("Waiting for first poll to complete…")
+        with st.expander("Debug: yfinance response structure"):
+            st.json(debug)
+    else:
+        history_df = pd.DataFrame(st.session_state.breadth_history[::-1])
+        styled = history_df.style.format({
+            "Bull": "{:.1f}", "Bear": "{:.1f}", "Net (B−B)": "{:+.1f}",
+            "Bull BO %": "{:.1f}", "Above close %": "{:.1f}",
+            "Green range %": "{:.1f}", "Bear BO %": "{:.1f}",
+            "Below close %": "{:.1f}", "Red range %": "{:.1f}",
+        }).map(_score_color, subset=["Bull", "Bear"]) \
+          .map(_net_color, subset=["Net (B−B)"]) \
+          .map(_score_color, subset=["Bull BO %", "Above close %", "Green range %"]) \
+          .map(lambda v: _score_color(100 - v) if pd.notna(v) else "",
+               subset=["Bear BO %", "Below close %", "Red range %"])
+        st.dataframe(styled, use_container_width=True, height=540)
+
+        st.caption(
+            f"{len(st.session_state.breadth_history)} polls in session. "
+            f"Refresh / close page = state resets."
+        )
+
+
+# === TAB 2: per-symbol direction =======================================
+with tab_symbols:
+    if today_ohlc.empty or yesterday_ohlc.empty:
+        st.warning(
+            f"Resolved today: {debug.get('resolved_today', 0)}, "
+            f"yesterday: {debug.get('resolved_yesterday', 0)}, "
+            f"missing: {len(missing)}. Will populate after the next "
+            f"successful poll."
+        )
+    else:
+        aligned = today_ohlc.join(
+            yesterday_ohlc, rsuffix="_y", how="inner",
+        )
+        aligned["pct_change"] = (
+            (aligned["close"] - aligned["close_y"]) / aligned["close_y"] * 100.0
+        )
+        aligned = aligned.sort_values("pct_change", ascending=False)
+        aligned["bias"] = aligned["pct_change"].apply(
+            lambda x: "🟢" if x > 0 else ("🔴" if x < 0 else "⚪")
+        )
+        display = aligned[["bias", "open", "high", "low", "close", "pct_change"]].rename(
+            columns={
+                "bias": " ", "open": "Open", "high": "High", "low": "Low",
+                "close": "Close", "pct_change": "% chg",
+            },
+        )
+        st.dataframe(
+            display.style.format({
+                "Open": "{:.2f}", "High": "{:.2f}", "Low": "{:.2f}",
+                "Close": "{:.2f}", "% chg": "{:+.2f}%",
+            }).map(_pct_color, subset=["% chg"]),
+            use_container_width=True, height=600,
+        )
+
+
+# Coverage details (collapsible, below tabs).
+if missing:
+    with st.expander(f"⚠ {len(missing)} symbols not returned by Yahoo"):
+        st.write("Likely recently delisted, renamed, or newly-added F&O "
+                 "constituents that lag Yahoo's catalog. The breadth "
+                 "calculation skips these — universe size is reduced "
+                 f"from {len(missing) + row.universe_size} to {row.universe_size} for this poll.")
+        st.write(", ".join(missing))
+
+# Disclaimer footer.
+st.markdown("---")
+st.caption(
+    "**Disclaimer**: Free educational view powered by Yahoo Finance, "
+    "delayed ~15 minutes from the live tape. Not for live trading "
+    "triggers. Use a broker WebSocket for real-time signals. "
+    "Yahoo can rate-limit / throttle; the app may show stale data "
+    "during such periods."
+)
