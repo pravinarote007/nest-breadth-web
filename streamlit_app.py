@@ -54,9 +54,25 @@ st.markdown(
 
 st.markdown(
     """
+<style>
+/* Lub-dub heartbeat: two quick beats, then rest. ~1.4s cycle. */
+@keyframes bb-heartbeat {
+  0%   { transform: scale(1);    filter: drop-shadow(0 0 0 rgba(34,197,94,0)); }
+  8%   { transform: scale(1.20); filter: drop-shadow(0 0 6px rgba(34,197,94,0.55)); }
+  16%  { transform: scale(1.00); }
+  24%  { transform: scale(1.12); filter: drop-shadow(0 0 4px rgba(34,197,94,0.4)); }
+  32%  { transform: scale(1.00); filter: drop-shadow(0 0 0 rgba(34,197,94,0)); }
+  100% { transform: scale(1.00); }
+}
+.bb-icon {
+  animation: bb-heartbeat 1.4s ease-in-out infinite;
+  transform-origin: center;
+  display: inline-block;
+}
+</style>
 <div style="display:flex;align-items:center;gap:14px;
             margin-top:8px;margin-bottom:8px;">
-  <svg width="56" height="40" viewBox="0 0 56 40"
+  <svg class="bb-icon" width="56" height="40" viewBox="0 0 56 40"
        xmlns="http://www.w3.org/2000/svg" fill="none">
     <polyline points="2,20 12,20 16,8 20,32 24,4 28,30 32,16 36,24 40,20 54,20"
               stroke="#22C55E" stroke-width="2.6"
