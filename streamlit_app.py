@@ -69,7 +69,7 @@ except ImportError:
 
 # --- Data fetch (cached for 60s) ---------------------------------------
 
-@st.cache_data(ttl=POLL_SECONDS, show_spinner="Polling Yahoo Finance...")
+@st.cache_data(ttl=POLL_SECONDS, show_spinner=False)
 def fetch_breadth() -> tuple[ExtendedBreadthRow, pd.DataFrame, pd.DataFrame, list[str], dict]:
     """One yf.download call → today's running + yesterday's OHLC →
     compute_breadth_row. Returns (row, today_ohlc, yesterday_ohlc,
