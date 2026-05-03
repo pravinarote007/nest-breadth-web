@@ -13,7 +13,7 @@ Caveats (shown in the UI banner too):
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -32,6 +32,7 @@ from direction_classifier import (
     DirectionVerdict,
 )
 from universe import load_universe
+from historical_breadth import fetch_historical_breadth
 import local_store
 
 UNIVERSE_CSV = Path(__file__).parent / "universe.csv"
@@ -431,11 +432,19 @@ if not today_ohlc.empty:
 
 # --- Section 2: tabs -- F&O breadth rows | Per-symbol direction --------
 
-tab_breadth, tab_weekly, tab_symbols = st.tabs([
+tab_breadth, tab_weekly, tab_history, tab_symbols = st.tabs([
     "📈 F&O Breadth (Daily)",
     "📅 F&O Breadth (Weekly)",
+    "🕒 Historical Breadth",
     "🔢 Per-symbol direction",
 ])
+
+
+# Cached historical fetch — keyed on date so repeat clicks return instantly.
+@st.cache_data(ttl=300, show_spinner=False)
+def _cached_historical_breadth(d: date):
+    universe = load_universe(UNIVERSE_CSV)
+    return fetch_historical_breadth(d, universe)
 
 
 # === TAB 1: row-per-poll breadth grid (mirrors WPF Live Breadth) =======
@@ -515,7 +524,62 @@ with tab_weekly:
         )
 
 
-# === TAB 2: per-symbol direction =======================================
+# === TAB 3: historical breadth (date picker + Compute) =================
+with tab_history:
+    st.markdown(
+        "**Pick a date and hit Compute.** Replays per-5-min breadth for "
+        "the F&O cash universe vs that day's prior-close baseline. "
+        "Yahoo retains 5-min bars for ~60 days."
+    )
+    today_local = datetime.now(IST).date()
+    col_d, col_b = st.columns([3, 1])
+    with col_d:
+        target = st.date_input(
+            "Date",
+            value=today_local - timedelta(days=1),
+            min_value=today_local - timedelta(days=58),
+            max_value=today_local,
+        )
+    with col_b:
+        run = st.button("Compute", type="primary", use_container_width=True,
+                        key="hist_compute")
+
+    if run:
+        with st.spinner(f"Fetching 5-min breadth for {target}..."):
+            grid_df_h, missing_h, debug_h = _cached_historical_breadth(target)
+        st.session_state.history_grid = grid_df_h
+        st.session_state.history_meta = (target, missing_h, debug_h)
+
+    if "history_grid" in st.session_state:
+        d_h, missing_h, debug_h = st.session_state.history_meta
+        grid_h: pd.DataFrame = st.session_state.history_grid
+        if grid_h is None or grid_h.empty:
+            err = debug_h.get("error", "no data returned")
+            st.warning(f"No 5-min breadth available for **{d_h}** — {err}.")
+        else:
+            # Newest at top to match the live Daily / Weekly tabs.
+            view = grid_h[::-1].reset_index(drop=True)
+            bull_cols = ["Bull BO %", "Abv Close %", "Green Range %", "Score Bull"]
+            bear_cols = ["Bear BO %", "Bel Close %", "Red Range %", "Score Bear"]
+            styled_h = view.style.format({
+                **{c: "{:.2f}" for c in bull_cols + bear_cols},
+            }).map(_score_color, subset=bull_cols) \
+              .map(lambda v: _score_color(100 - v) if pd.notna(v) else "",
+                   subset=bear_cols) \
+              .set_properties(subset=["Score Bull"],
+                              **{"border-right": "3px solid #888"}) \
+              .set_table_styles([{"selector": "th.col_heading.level0:nth-child(6)",
+                                   "props": [("border-right", "3px solid #888")]}],
+                                  overwrite=False)
+            st.dataframe(styled_h, use_container_width=True, height=540)
+            note = (f"{len(view)} 5-min buckets for {d_h}. "
+                    f"Universe baseline date: {debug_h.get('yesterday_baseline', '—')}.")
+            if missing_h:
+                note += f" ⚠ {len(missing_h)} symbols missing."
+            st.caption(note)
+
+
+# === TAB 4: per-symbol direction =======================================
 with tab_symbols:
     if today_ohlc.empty or yesterday_ohlc.empty:
         st.warning(
