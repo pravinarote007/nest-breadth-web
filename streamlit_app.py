@@ -42,7 +42,7 @@ POLL_SECONDS = 60
 # --- Page setup ---------------------------------------------------------
 
 st.set_page_config(
-    page_title="NIFTY F&O Breadth (free)",
+    page_title="Market Sentiments Meter",
     page_icon="📊",
     layout="wide",
 )
@@ -52,7 +52,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-st.title("NIFTY F&O Breadth")
+st.title("Market Sentiments Meter")
 
 
 # --- Auto-rerun every 60 seconds ---------------------------------------
