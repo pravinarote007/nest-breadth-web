@@ -405,7 +405,7 @@ if "breadth_history" not in st.session_state:
             except (TypeError, ValueError, AttributeError):
                 ts_ist = pd.Timestamp(ts_val)
             st.session_state.breadth_history.append({
-                "Time": ts_ist.strftime("%H:%M:%S"),
+                "Time": ts_ist.strftime("%H:%M"),
                 "Bull BO %": float(r["d_bullish_bo_pct"] or 0.0),
                 "Abv Close %": float(r["d_above_close_pct"] or 0.0),
                 "Green Range %": float(r["d_green_range_pct"] or 0.0),
@@ -422,7 +422,7 @@ if not today_ohlc.empty:
     # Column order matches WPF Live Breadth (Daily tab): time, then all
     # bull-side metrics together, then all bear-side metrics together.
     history_row = {
-        "Time": last_poll[-8:],            # HH:MM:SS
+        "Time": last_poll[-8:-3],     # HH:MM (drop ":SS")
         "Bull BO %": row.bullish_bo_pct,
         "Abv Close %": row.above_close_pct,
         "Green Range %": row.green_range_pct,
@@ -463,7 +463,7 @@ if not today_ohlc.empty:
         if ext.weekly is not None:
             wk = ext.weekly
             weekly_row = {
-                "Time": last_poll[-8:],
+                "Time": last_poll[-8:-3],     # HH:MM (drop ":SS")
                 "Bull BO %": wk.bullish_bo_pct,
                 "Abv Close %": wk.above_close_pct,
                 "Green Range %": wk.green_range_pct,
