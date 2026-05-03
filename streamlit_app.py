@@ -91,7 +91,17 @@ st.markdown(
 
 try:
     from streamlit_autorefresh import st_autorefresh
-    st_autorefresh(interval=POLL_SECONDS * 1000, key="poll-tick")
+    # Align refresh to wall-clock minute boundaries (15:40:00, 15:41:00, …)
+    # rather than "60s from page load". Each rerun recomputes the interval
+    # to land on the next :00 second mark; once aligned, subsequent
+    # intervals are exactly 60s and stay locked to the boundary.
+    _now_ist = datetime.now(IST)
+    _seconds_to_next_min = 60 - _now_ist.second
+    if _seconds_to_next_min <= 1:
+        # Already on (or just past) the boundary — wait a full cycle so
+        # the cache TTL has time to expire before refetching.
+        _seconds_to_next_min += 60
+    st_autorefresh(interval=_seconds_to_next_min * 1000 + 200, key="poll-tick")
 except ImportError:
     st.info(
         "Install `streamlit-autorefresh` (in requirements.txt) for "
@@ -101,7 +111,11 @@ except ImportError:
 
 # --- Data fetch (cached for 60s) ---------------------------------------
 
-@st.cache_data(ttl=POLL_SECONDS, show_spinner=False)
+# Cache TTL must be strictly less than the polling interval — otherwise
+# an aligned-to-minute-boundary rerun (which lands ~60s + 200ms after
+# the previous fetch) would still hit a "fresh" cache entry and serve
+# stale data. 50s gives a comfortable margin.
+@st.cache_data(ttl=50, show_spinner=False)
 def fetch_breadth() -> tuple[ExtendedBreadthRow, pd.DataFrame, pd.DataFrame, list[str], dict]:
     """One yf.download call → today's running + yesterday's OHLC →
     compute_breadth_row. Returns (row, today_ohlc, yesterday_ohlc,
