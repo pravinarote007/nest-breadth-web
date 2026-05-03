@@ -532,7 +532,7 @@ with tab_history:
         "Yahoo retains 5-min bars for ~60 days."
     )
     today_local = datetime.now(IST).date()
-    col_d, col_b = st.columns([3, 1])
+    col_d, col_b, col_pad = st.columns([2, 1, 4], vertical_alignment="bottom")
     with col_d:
         target = st.date_input(
             "Date",
