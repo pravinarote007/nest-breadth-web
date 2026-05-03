@@ -95,13 +95,22 @@ try:
     # rather than "60s from page load". Each rerun recomputes the interval
     # to land on the next :00 second mark; once aligned, subsequent
     # intervals are exactly 60s and stay locked to the boundary.
+    #
+    # NOTE: the `key` MUST vary with the interval — `streamlit_autorefresh`
+    # mounts a JS setInterval timer on first render and ignores subsequent
+    # `interval` prop changes for the same key. By varying the key, we
+    # force a fresh component (fresh timer) on every rerun.
     _now_ist = datetime.now(IST)
     _seconds_to_next_min = 60 - _now_ist.second
     if _seconds_to_next_min <= 1:
         # Already on (or just past) the boundary — wait a full cycle so
         # the cache TTL has time to expire before refetching.
         _seconds_to_next_min += 60
-    st_autorefresh(interval=_seconds_to_next_min * 1000 + 200, key="poll-tick")
+    _interval_ms = _seconds_to_next_min * 1000 + 200
+    st_autorefresh(
+        interval=_interval_ms,
+        key=f"poll-tick-{_now_ist.minute}-{_seconds_to_next_min}",
+    )
 except ImportError:
     st.info(
         "Install `streamlit-autorefresh` (in requirements.txt) for "
