@@ -463,7 +463,12 @@ with tab_breadth:
             **{c: "{:.2f}" for c in bull_cols + bear_cols},
         }).map(_score_color, subset=bull_cols) \
           .map(lambda v: _score_color(100 - v) if pd.notna(v) else "",
-               subset=bear_cols)
+               subset=bear_cols) \
+          .set_properties(subset=["Score Bull"],
+                          **{"border-right": "3px solid #888"}) \
+          .set_table_styles([{"selector": "th.col_heading.level0:nth-child(6)",
+                              "props": [("border-right", "3px solid #888")]}],
+                             overwrite=False)
         st.dataframe(styled, use_container_width=True, height=540)
 
         st.caption(
@@ -496,7 +501,12 @@ with tab_weekly:
             **{c: "{:.2f}" for c in bull_cols + bear_cols},
         }).map(_score_color, subset=bull_cols) \
           .map(lambda v: _score_color(100 - v) if pd.notna(v) else "",
-               subset=bear_cols)
+               subset=bear_cols) \
+          .set_properties(subset=["Score Bull"],
+                          **{"border-right": "3px solid #888"}) \
+          .set_table_styles([{"selector": "th.col_heading.level0:nth-child(6)",
+                              "props": [("border-right", "3px solid #888")]}],
+                             overwrite=False)
         st.dataframe(styled_w, use_container_width=True, height=540)
 
         st.caption(
