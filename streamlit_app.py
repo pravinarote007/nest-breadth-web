@@ -52,7 +52,23 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-st.title("BreadthBeat")
+st.markdown(
+    """
+<div style="display:flex;align-items:center;gap:14px;
+            margin-top:8px;margin-bottom:8px;">
+  <svg width="56" height="40" viewBox="0 0 56 40"
+       xmlns="http://www.w3.org/2000/svg" fill="none">
+    <polyline points="2,20 12,20 16,8 20,32 24,4 28,30 32,16 36,24 40,20 54,20"
+              stroke="#22C55E" stroke-width="2.6"
+              stroke-linecap="round" stroke-linejoin="round"/>
+  </svg>
+  <span style="font-size:42px;font-weight:300;
+               color:var(--text-color, #fafafa);
+               line-height:1;">BreadthBeat</span>
+</div>
+""",
+    unsafe_allow_html=True,
+)
 
 
 # --- Auto-rerun every 60 seconds ---------------------------------------
