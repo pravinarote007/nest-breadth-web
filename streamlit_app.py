@@ -269,7 +269,7 @@ with st.spinner("Computing breadth..."):
 row = ext.daily
 
 
-# --- Section 1: 4 sentiment cards (Overall / Daily / Weekly / Options) ---
+# --- Sentiment-cards helper (Overall / Daily / Weekly / Options) -------
 
 def _render_verdict_card(col, title: str, verdict: DirectionVerdict) -> None:
     col.markdown(
@@ -287,11 +287,14 @@ def _render_verdict_card(col, title: str, verdict: DirectionVerdict) -> None:
     )
 
 
-if not today_ohlc.empty:
-    overall_v = classify_overall(ext)
-    daily_v = classify_daily(ext.daily)
-    weekly_v = classify_weekly(ext.weekly) if ext.weekly is not None else None
-    options_v = classify_option_selling(ext.daily)
+def _render_sentiment_block(ext_local: ExtendedBreadthRow) -> None:
+    """Renders the 4 verdict cards + reasoning bullets. Reused by the
+    live F&O Breadth tab and the Historical Breadth tab so both
+    surfaces show the same WPF-style summary."""
+    overall_v = classify_overall(ext_local)
+    daily_v = classify_daily(ext_local.daily)
+    weekly_v = classify_weekly(ext_local.weekly) if ext_local.weekly is not None else None
+    options_v = classify_option_selling(ext_local.daily)
 
     cc1, cc2, cc3, cc4 = st.columns(4)
     _render_verdict_card(cc1, "Overall", overall_v)
@@ -314,19 +317,13 @@ if not today_ohlc.empty:
         )
     _render_verdict_card(cc4, "Options · Buy / Sell", options_v)
 
-    # Combined reasoning bullets, mirroring the WPF live-breadth pane.
-    bullet_lines: list[str] = []
-    bullet_lines.extend(overall_v.reasons)
-    if bullet_lines:
+    if overall_v.reasons:
         st.markdown(
             "<div style='margin-top:8px;color:#cccccc;font-size:13px;'>"
-            + "".join(f"• {r}<br/>" for r in bullet_lines)
+            + "".join(f"• {r}<br/>" for r in overall_v.reasons)
             + "</div>",
             unsafe_allow_html=True,
         )
-
-
-st.caption(f"Last poll: {last_poll} IST · Auto-refresh every {POLL_SECONDS}s")
 
 
 # --- Append to in-session breadth-row history --------------------------
@@ -430,15 +427,7 @@ if not today_ohlc.empty:
                     st.session_state.weekly_history = st.session_state.weekly_history[-500:]
 
 
-# --- Section 2: tabs -- F&O breadth rows | Per-symbol direction --------
-
-tab_breadth, tab_weekly, tab_history, tab_symbols = st.tabs([
-    "📈 F&O Breadth (Daily)",
-    "📅 F&O Breadth (Weekly)",
-    "🕒 Historical Breadth",
-    "🔢 Per-symbol direction",
-])
-
+# --- Top-level layout: 2 tabs (F&O Breadth | Historical Breadth) ------
 
 # Cached historical fetch — keyed on date so repeat clicks return instantly.
 @st.cache_data(ttl=300, show_spinner=False)
@@ -447,7 +436,27 @@ def _cached_historical_breadth(d: date):
     return fetch_historical_breadth(d, universe)
 
 
-# === TAB 1: row-per-poll breadth grid (mirrors WPF Live Breadth) =======
+tab_fno, tab_history = st.tabs([
+    "📈 F&O Breadth",
+    "🕒 Historical Breadth",
+])
+
+
+# ──────────────── F&O BREADTH (live) ────────────────
+with tab_fno:
+    # Sentiment cards from the latest live poll.
+    if not today_ohlc.empty:
+        _render_sentiment_block(ext)
+
+    st.caption(f"Last poll: {last_poll} IST · Auto-refresh every {POLL_SECONDS}s")
+
+    tab_breadth, tab_weekly, tab_symbols = st.tabs([
+        "📈 Daily",
+        "📅 Weekly",
+        "🔢 Per-symbol direction",
+    ])
+
+# === Live: Daily history grid ==========================================
 with tab_breadth:
     st.markdown("**Newest poll at the top.** One row per poll cycle. "
                 "Scroll back to see how breadth evolved through the session.")
@@ -486,7 +495,7 @@ with tab_breadth:
         )
 
 
-# === TAB 2: weekly breadth (today vs last-week baseline) ===============
+# === Live: weekly breadth (today vs last-week baseline) ================
 with tab_weekly:
     st.markdown(
         "**Weekly view** — same metrics, but compared against the OHLC of "
@@ -524,7 +533,7 @@ with tab_weekly:
         )
 
 
-# === TAB 3: historical breadth (date picker + Compute) =================
+# ──────────────── HISTORICAL BREADTH ────────────────
 with tab_history:
     st.markdown(
         "**Pick a date and hit Compute.** Replays per-5-min breadth for "
@@ -539,6 +548,7 @@ with tab_history:
             value=today_local - timedelta(days=1),
             min_value=today_local - timedelta(days=58),
             max_value=today_local,
+            key="hist_date",
         )
     with col_b:
         run = st.button("Compute", type="primary", use_container_width=True,
@@ -546,17 +556,24 @@ with tab_history:
 
     if run:
         with st.spinner(f"Fetching 5-min breadth for {target}..."):
-            grid_df_h, missing_h, debug_h = _cached_historical_breadth(target)
+            grid_df_h, missing_h, debug_h, last_row_h = _cached_historical_breadth(target)
         st.session_state.history_grid = grid_df_h
-        st.session_state.history_meta = (target, missing_h, debug_h)
+        st.session_state.history_meta = (target, missing_h, debug_h, last_row_h)
 
     if "history_grid" in st.session_state:
-        d_h, missing_h, debug_h = st.session_state.history_meta
+        d_h, missing_h, debug_h, last_row_h = st.session_state.history_meta
         grid_h: pd.DataFrame = st.session_state.history_grid
         if grid_h is None or grid_h.empty:
             err = debug_h.get("error", "no data returned")
             st.warning(f"No 5-min breadth available for **{d_h}** — {err}.")
         else:
+            # End-of-session sentiment block — same WPF-style cards as the
+            # live F&O tab. Weekly card degrades to N/A since we don't fetch
+            # a 5-trading-days-ago baseline for the historical view.
+            if last_row_h is not None:
+                ext_hist = ExtendedBreadthRow(daily=last_row_h, weekly=None)
+                _render_sentiment_block(ext_hist)
+
             # Newest at top to match the live Daily / Weekly tabs.
             view = grid_h[::-1].reset_index(drop=True)
             bull_cols = ["Bull BO %", "Abv Close %", "Green Range %", "Score Bull"]
@@ -573,13 +590,13 @@ with tab_history:
                                   overwrite=False)
             st.dataframe(styled_h, use_container_width=True, height=540)
             note = (f"{len(view)} 5-min buckets for {d_h}. "
-                    f"Universe baseline date: {debug_h.get('yesterday_baseline', '—')}.")
+                    f"Baseline date: {debug_h.get('yesterday_baseline', '—')}.")
             if missing_h:
                 note += f" ⚠ {len(missing_h)} symbols missing."
             st.caption(note)
 
 
-# === TAB 4: per-symbol direction =======================================
+# === Live: per-symbol direction ========================================
 with tab_symbols:
     if today_ohlc.empty or yesterday_ohlc.empty:
         st.warning(
