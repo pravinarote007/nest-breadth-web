@@ -42,7 +42,7 @@ POLL_SECONDS = 60
 # --- Page setup ---------------------------------------------------------
 
 st.set_page_config(
-    page_title="Market Sentiments Meter",
+    page_title="BreadthBeat",
     page_icon="📊",
     layout="wide",
 )
@@ -52,7 +52,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-st.title("Market Sentiments Meter")
+st.title("BreadthBeat")
 
 
 # --- Auto-rerun every 60 seconds ---------------------------------------
