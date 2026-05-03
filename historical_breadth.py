@@ -88,13 +88,17 @@ def fetch_historical_breadth(
         }
 
     # Pick yesterday's daily row = latest daily index strictly before target.
-    daily_dates = pd.to_datetime(daily_df.index).date
-    earlier = daily_dates[daily_dates < target_date]
-    if len(earlier) == 0:
+    # Keep both forms: the date for display, the Timestamp for `.loc` lookup
+    # (yfinance returns DatetimeIndex of midnight timestamps, not raw dates).
+    daily_idx = pd.to_datetime(daily_df.index)
+    earlier_mask = daily_idx.date < target_date
+    if not earlier_mask.any():
         return pd.DataFrame(), tickers_list, {
             **debug, "error": "no prior trading day in baseline window",
         }
-    yesterday_pos = max(earlier)
+    earlier_ts = daily_idx[earlier_mask]
+    yesterday_ts = earlier_ts.max()                          # actual index value
+    yesterday_pos = pd.Timestamp(yesterday_ts).date()         # for display only
     debug["yesterday_baseline"] = str(yesterday_pos)
 
     is_multi = intraday_day.columns.nlevels > 1
@@ -121,22 +125,33 @@ def fetch_historical_breadth(
     cum_low   = lows.cummin()
     cum_close = closes.ffill()
 
-    # Yesterday baseline — pulled from the daily frame at yesterday_pos.
+    # Yesterday baseline — pulled from the daily frame at yesterday_ts.
     daily_multi = daily_df.columns.nlevels > 1
-    if daily_multi:
-        try:
-            y_open  = daily_df["Open"].loc[yesterday_pos]
-            y_high  = daily_df["High"].loc[yesterday_pos]
-            y_low   = daily_df["Low"].loc[yesterday_pos]
-            y_close = daily_df["Close"].loc[yesterday_pos]
-        except KeyError:
-            return pd.DataFrame(), tickers_list, {
-                **debug, "error": f"daily baseline row for {yesterday_pos} not present",
-            }
-    else:
+    if not daily_multi:
         return pd.DataFrame(), tickers_list, {
             **debug, "error": "single-ticker daily shape unsupported",
         }
+    try:
+        y_open  = daily_df["Open"].loc[yesterday_ts]
+        y_high  = daily_df["High"].loc[yesterday_ts]
+        y_low   = daily_df["Low"].loc[yesterday_ts]
+        y_close = daily_df["Close"].loc[yesterday_ts]
+    except KeyError:
+        # Last-ditch fallback: align by date if the precise Timestamp lookup
+        # missed (some yfinance edge cases hand back tz-aware indexes).
+        try:
+            row_mask = pd.to_datetime(daily_df.index).date == yesterday_pos
+            slice_ = daily_df[row_mask]
+            if slice_.empty:
+                raise KeyError
+            y_open  = slice_["Open"].iloc[0]
+            y_high  = slice_["High"].iloc[0]
+            y_low   = slice_["Low"].iloc[0]
+            y_close = slice_["Close"].iloc[0]
+        except Exception:
+            return pd.DataFrame(), tickers_list, {
+                **debug, "error": f"daily baseline row for {yesterday_pos} not present",
+            }
 
     yesterday_ohlc = pd.DataFrame({
         "open": y_open, "high": y_high, "low": y_low, "close": y_close,
