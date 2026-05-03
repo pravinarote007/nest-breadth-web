@@ -65,7 +65,7 @@ st.markdown(
   100% { transform: scale(1.00); }
 }
 .bb-icon {
-  animation: bb-heartbeat 1.4s ease-in-out infinite;
+  animation: bb-heartbeat 2.2s ease-in-out infinite;
   transform-origin: center;
   display: inline-block;
 }
