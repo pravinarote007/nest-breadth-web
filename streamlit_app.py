@@ -336,6 +336,9 @@ st.caption(f"Last poll: {last_poll} IST · Auto-refresh every {POLL_SECONDS}s")
 # is open. State resets when the user closes the page or the app
 # sleeps for >30 min.
 
+if "weekly_history" not in st.session_state:
+    st.session_state.weekly_history = []
+
 if "breadth_history" not in st.session_state:
     st.session_state.breadth_history = []
     # Hydrate from local DuckDB on first page load (no-op on Streamlit
@@ -403,11 +406,34 @@ if not today_ohlc.empty:
             universe_size=row.universe_size,
         )
 
+        # Weekly history (in-session only — local_store schema is daily).
+        if ext.weekly is not None:
+            wk = ext.weekly
+            weekly_row = {
+                "Time": last_poll[-8:],
+                "Bull BO %": wk.bullish_bo_pct,
+                "Abv Close %": wk.above_close_pct,
+                "Green Range %": wk.green_range_pct,
+                "Today High#": wk.today_high_count,
+                "Score Bull": wk.score_bull,
+                "Bear BO %": wk.bearish_bo_pct,
+                "Bel Close %": wk.below_close_pct,
+                "Red Range %": wk.red_range_pct,
+                "Today Low#": wk.today_low_count,
+                "Score Bear": wk.score_bear,
+            }
+            if (not st.session_state.weekly_history
+                    or st.session_state.weekly_history[-1]["Time"] != weekly_row["Time"]):
+                st.session_state.weekly_history.append(weekly_row)
+                if len(st.session_state.weekly_history) > 500:
+                    st.session_state.weekly_history = st.session_state.weekly_history[-500:]
+
 
 # --- Section 2: tabs -- F&O breadth rows | Per-symbol direction --------
 
-tab_breadth, tab_symbols = st.tabs([
-    "📈 F&O Breadth (per-poll history)",
+tab_breadth, tab_weekly, tab_symbols = st.tabs([
+    "📈 F&O Breadth (Daily)",
+    "📅 F&O Breadth (Weekly)",
     "🔢 Per-symbol direction",
 ])
 
@@ -443,6 +469,39 @@ with tab_breadth:
         st.caption(
             f"{len(st.session_state.breadth_history)} polls in session. "
             f"Refresh / close page = state resets."
+        )
+
+
+# === TAB 2: weekly breadth (today vs last-week baseline) ===============
+with tab_weekly:
+    st.markdown(
+        "**Weekly view** — same metrics, but compared against the OHLC of "
+        "~5 trading days ago (last week's baseline) instead of yesterday's. "
+        "Newest poll on top."
+    )
+
+    if not st.session_state.weekly_history:
+        if ext.weekly is None:
+            st.info(
+                "Weekly baseline unavailable — Yahoo returned fewer than ~5 "
+                "trading days. Try again after the first successful 15-day fetch."
+            )
+        else:
+            st.info("Waiting for first poll to complete…")
+    else:
+        weekly_df = pd.DataFrame(st.session_state.weekly_history[::-1])
+        bull_cols = ["Bull BO %", "Abv Close %", "Green Range %", "Score Bull"]
+        bear_cols = ["Bear BO %", "Bel Close %", "Red Range %", "Score Bear"]
+        styled_w = weekly_df.style.format({
+            **{c: "{:.2f}" for c in bull_cols + bear_cols},
+        }).map(_score_color, subset=bull_cols) \
+          .map(lambda v: _score_color(100 - v) if pd.notna(v) else "",
+               subset=bear_cols)
+        st.dataframe(styled_w, use_container_width=True, height=540)
+
+        st.caption(
+            f"{len(st.session_state.weekly_history)} polls in session "
+            f"(weekly history is in-session only — not persisted)."
         )
 
 
