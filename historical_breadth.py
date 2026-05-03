@@ -16,7 +16,9 @@ from typing import List, Optional, Tuple
 import pandas as pd
 import yfinance as yf
 
-from breadth_compute import BreadthRow, compute_breadth_row
+from breadth_compute import (
+    BreadthRow, ExtendedBreadthRow, compute_breadth_row,
+)
 from universe import UniverseEntry
 
 
@@ -26,15 +28,16 @@ _IST = "Asia/Kolkata"
 def fetch_historical_breadth(
     target_date: date,
     universe: List[UniverseEntry],
-) -> Tuple[pd.DataFrame, List[str], dict, Optional[BreadthRow]]:
+) -> Tuple[pd.DataFrame, List[str], dict, Optional[ExtendedBreadthRow]]:
     """Pull 5-minute intraday OHLC for ``target_date`` plus the prior
-    daily close as baseline; replay per-5-min breadth for the day.
+    daily close (yesterday) and a ~5-trading-days-ago daily close
+    (last week) as baselines; replay per-5-min breadth for the day.
 
-    Returns ``(grid_df, missing_symbols, debug, last_row)``. Empty grid
+    Returns ``(grid_df, missing_symbols, debug, last_ext)``. Empty grid
     means no usable data — `debug["error"]` carries the reason
-    (holiday, too-old date, Yahoo returned empty, etc.). ``last_row``
-    is the BreadthRow at end of session, used by the UI to render
-    its sentiment-cards block; ``None`` when the grid is empty.
+    (holiday, too-old date, Yahoo returned empty, etc.). ``last_ext``
+    is the ExtendedBreadthRow at end of session — daily + (when
+    available) weekly — for the UI's sentiment-cards block.
     """
     tickers_list = [u.yfinance_ticker for u in universe]
     sym_by_yt = {u.yfinance_ticker: u.symbol for u in universe}
@@ -56,11 +59,12 @@ def fetch_historical_breadth(
         threads=False,
         auto_adjust=False,
     )
-    # 10-day daily window for the prior-close baseline (handles long
-    # weekends without missing the last trading day before target).
+    # 15-day daily window covers BOTH baselines: yesterday (1 trading day
+    # back) and "last week" (~5 trading days back) — with a few extra days
+    # of slack so weekends/holidays don't collapse our trading-day count.
     daily_df = yf.download(
         tickers=tickers,
-        start=target_date - timedelta(days=10),
+        start=target_date - timedelta(days=15),
         end=target_date + timedelta(days=1),
         interval="1d",
         progress=False,
@@ -163,8 +167,35 @@ def fetch_historical_breadth(
     yesterday_ohlc = yesterday_ohlc.dropna()
     debug["resolved_yesterday"] = int(len(yesterday_ohlc))
 
+    # ─── Weekly baseline: 5 trading days before target_date (mirrors the
+    # live Weekly tab's last-week baseline). When the daily history isn't
+    # deep enough — first ~5 sessions of Yahoo retention — the weekly
+    # baseline is None and the historical view's Weekly card degrades to
+    # "N/A · need 5+ days".
+    last_week_ohlc: Optional[pd.DataFrame] = None
+    if earlier_mask.any() and earlier_ts.size >= 5:
+        # `earlier_ts` is sorted ascending; take the 5th-most-recent
+        # (i.e. ~5 trading days before target_date).
+        sorted_earlier = earlier_ts.sort_values()
+        last_week_ts = sorted_earlier[-5]
+        try:
+            lw_open  = daily_df["Open"].loc[last_week_ts]
+            lw_high  = daily_df["High"].loc[last_week_ts]
+            lw_low   = daily_df["Low"].loc[last_week_ts]
+            lw_close = daily_df["Close"].loc[last_week_ts]
+            last_week_ohlc = pd.DataFrame({
+                "open": lw_open, "high": lw_high, "low": lw_low, "close": lw_close,
+            })
+            last_week_ohlc.index = last_week_ohlc.index.map(lambda t: sym_by_yt.get(t, t))
+            last_week_ohlc = last_week_ohlc.dropna()
+            debug["last_week_baseline"] = str(pd.Timestamp(last_week_ts).date())
+            debug["resolved_last_week"] = int(len(last_week_ohlc))
+        except KeyError:
+            last_week_ohlc = None
+
     rows: list[dict] = []
     last_row: Optional[BreadthRow] = None
+    last_today_ohlc: Optional[pd.DataFrame] = None
     for ts in intraday_day.index:
         today_ohlc = pd.DataFrame({
             "open":  today_open_per_ticker,
@@ -178,6 +209,7 @@ def fetch_historical_breadth(
 
         row = compute_breadth_row(today_ohlc, yesterday_ohlc)
         last_row = row
+        last_today_ohlc = today_ohlc
         # IST hh:mm label (ts is already IST-localized after tz_convert above).
         time_label = ts.strftime("%H:%M") if hasattr(ts, "strftime") else str(ts)
         rows.append({
@@ -195,4 +227,14 @@ def fetch_historical_breadth(
         })
 
     debug["resolved_buckets"] = len(rows)
-    return pd.DataFrame(rows), [], debug, last_row
+
+    # End-of-session weekly row (if we have both the last today_ohlc and
+    # the last_week baseline). Mirrors the live view's
+    # `compute_breadth_row_extended` shape.
+    last_ext: Optional[ExtendedBreadthRow] = None
+    if last_row is not None:
+        weekly_row = None
+        if last_today_ohlc is not None and last_week_ohlc is not None and not last_week_ohlc.empty:
+            weekly_row = compute_breadth_row(last_today_ohlc, last_week_ohlc)
+        last_ext = ExtendedBreadthRow(daily=last_row, weekly=weekly_row)
+    return pd.DataFrame(rows), [], debug, last_ext

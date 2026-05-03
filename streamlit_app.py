@@ -556,23 +556,22 @@ with tab_history:
 
     if run:
         with st.spinner(f"Fetching 5-min breadth for {target}..."):
-            grid_df_h, missing_h, debug_h, last_row_h = _cached_historical_breadth(target)
+            grid_df_h, missing_h, debug_h, ext_h = _cached_historical_breadth(target)
         st.session_state.history_grid = grid_df_h
-        st.session_state.history_meta = (target, missing_h, debug_h, last_row_h)
+        st.session_state.history_meta = (target, missing_h, debug_h, ext_h)
 
     if "history_grid" in st.session_state:
-        d_h, missing_h, debug_h, last_row_h = st.session_state.history_meta
+        d_h, missing_h, debug_h, ext_h = st.session_state.history_meta
         grid_h: pd.DataFrame = st.session_state.history_grid
         if grid_h is None or grid_h.empty:
             err = debug_h.get("error", "no data returned")
             st.warning(f"No 5-min breadth available for **{d_h}** — {err}.")
         else:
-            # End-of-session sentiment block — same WPF-style cards as the
-            # live F&O tab. Weekly card degrades to N/A since we don't fetch
-            # a 5-trading-days-ago baseline for the historical view.
-            if last_row_h is not None:
-                ext_hist = ExtendedBreadthRow(daily=last_row_h, weekly=None)
-                _render_sentiment_block(ext_hist)
+            # End-of-session sentiment block — same 4 WPF-style cards as the
+            # live F&O tab. Weekly card populates when we have a
+            # ~5-trading-days-ago baseline; otherwise it degrades to "N/A".
+            if ext_h is not None:
+                _render_sentiment_block(ext_h)
 
             # Newest at top to match the live Daily / Weekly tabs.
             view = grid_h[::-1].reset_index(drop=True)
