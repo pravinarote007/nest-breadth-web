@@ -277,24 +277,10 @@ def fetch_breadth() -> tuple[ExtendedBreadthRow, pd.DataFrame, pd.DataFrame, lis
                 )
             except (KeyError, TypeError, ValueError):
                 pass
-        # Last-week baseline: ~5 trading days back (or whatever the
-        # earliest available row is, capped at 6 back).
-        if len(idx) >= 6:
-            wk_dt = idx[-6]
-        elif len(idx) >= 3:
-            wk_dt = idx[0]
-        else:
-            wk_dt = None
-        if wk_dt is not None:
-            try:
-                last_week_rows[u.symbol] = (
-                    float(open_s.loc[wk_dt]),
-                    float(high_s.loc[wk_dt]),
-                    float(low_s.loc[wk_dt]),
-                    float(close_s.loc[wk_dt]),
-                )
-            except (KeyError, TypeError, ValueError):
-                pass
+    # (last-week baseline now sourced from a separate weekly-bar fetch
+    # below — see "Weekly baseline" block. The old per-symbol "5 trading
+    # days back" logic was unreliable for new listings and around
+    # holidays.)
 
     today_ohlc = pd.DataFrame.from_dict(
         today_rows, orient="index", columns=["open", "high", "low", "close"],
@@ -302,6 +288,50 @@ def fetch_breadth() -> tuple[ExtendedBreadthRow, pd.DataFrame, pd.DataFrame, lis
     yesterday_ohlc = pd.DataFrame.from_dict(
         yesterday_rows, orient="index", columns=["open", "high", "low", "close"],
     )
+
+    # ─── Weekly baseline: Yahoo native weekly bars ───
+    # `interval="1wk"` returns one bar per ISO week (Monday-aligned).
+    # The last bar is the in-progress current week; we want the most
+    # recent COMPLETED week. Filter to bars whose Monday-date is
+    # strictly before today's Monday-date.
+    last_week_rows: dict[str, tuple] = {}
+    try:
+        df_weekly = yf.download(
+            tickers=tickers,
+            period="2mo", interval="1wk",
+            progress=False, threads=False, auto_adjust=False,
+        )
+    except Exception:
+        df_weekly = None
+    if df_weekly is not None and not df_weekly.empty:
+        weekly_idx = pd.to_datetime(df_weekly.index)
+        # Monday-of-this-week (IST). yfinance week-start is Monday too.
+        today_local = datetime.now(IST).date()
+        this_monday = today_local - timedelta(days=today_local.weekday())
+        prior_mask = weekly_idx.date < this_monday
+        if prior_mask.any():
+            last_completed_ts = weekly_idx[prior_mask][-1]
+            is_multi_w = df_weekly.columns.nlevels > 1
+            for u in universe:
+                yt = u.yfinance_ticker
+                try:
+                    if is_multi_w:
+                        o = df_weekly["Open"][yt].loc[last_completed_ts]
+                        h = df_weekly["High"][yt].loc[last_completed_ts]
+                        l = df_weekly["Low"][yt].loc[last_completed_ts]
+                        c = df_weekly["Close"][yt].loc[last_completed_ts]
+                    else:
+                        o = df_weekly["Open"].loc[last_completed_ts]
+                        h = df_weekly["High"].loc[last_completed_ts]
+                        l = df_weekly["Low"].loc[last_completed_ts]
+                        c = df_weekly["Close"].loc[last_completed_ts]
+                    if any(pd.isna(v) for v in (o, h, l, c)):
+                        continue
+                    last_week_rows[u.symbol] = (float(o), float(h), float(l), float(c))
+                except (KeyError, TypeError, ValueError):
+                    continue
+            debug["weekly_baseline_ts"] = str(last_completed_ts.date())
+
     last_week_ohlc = pd.DataFrame.from_dict(
         last_week_rows, orient="index", columns=["open", "high", "low", "close"],
     )
@@ -721,8 +751,9 @@ with tab_weekly:
     if not st.session_state.weekly_history:
         if ext.weekly is None:
             st.info(
-                "Weekly baseline unavailable — Yahoo returned fewer than ~5 "
-                "trading days. Try again after the first successful 15-day fetch."
+                "Weekly baseline unavailable — Yahoo's weekly bars haven't "
+                "yet returned a completed prior-week candle. Retry in a "
+                "few minutes."
             )
         else:
             st.info("Waiting for first poll to complete…")
