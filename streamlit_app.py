@@ -289,37 +289,47 @@ def fetch_breadth() -> tuple[ExtendedBreadthRow, pd.DataFrame, pd.DataFrame, lis
         yesterday_rows, orient="index", columns=["open", "high", "low", "close"],
     )
 
-    # ─── Weekly baseline: Yahoo native weekly bars ───
+    # ─── Weekly baseline: Yahoo native weekly bars (preferred) ───
     # `interval="1wk"` returns one bar per ISO week (Monday-aligned).
     # The last bar is the in-progress current week; we want the most
     # recent COMPLETED week. Filter to bars whose Monday-date is
     # strictly before today's Monday-date.
     last_week_rows: dict[str, tuple] = {}
+    df_weekly = None
     try:
         df_weekly = yf.download(
             tickers=tickers,
-            period="2mo", interval="1wk",
+            period="3mo", interval="1wk",
             progress=False, threads=False, auto_adjust=False,
         )
-    except Exception:
-        df_weekly = None
+    except Exception as exc:
+        debug["weekly_fetch_error"] = f"{type(exc).__name__}: {exc}"
+
     if df_weekly is not None and not df_weekly.empty:
-        weekly_idx = pd.to_datetime(df_weekly.index)
-        # Monday-of-this-week (IST). yfinance week-start is Monday too.
+        debug["weekly_shape"] = list(df_weekly.shape)
+        debug["weekly_cols_nlevels"] = df_weekly.columns.nlevels
+        # Use ORIGINAL index values for the .loc lookup (any tz info etc.
+        # must round-trip cleanly). Filter via a parallel date-array.
+        weekly_dates = pd.to_datetime(df_weekly.index).date
         today_local = datetime.now(IST).date()
         this_monday = today_local - timedelta(days=today_local.weekday())
-        prior_mask = weekly_idx.date < this_monday
+        debug["weekly_today_monday"] = str(this_monday)
+        debug["weekly_index_dates"] = [str(d) for d in weekly_dates[-5:]]
+
+        prior_mask = weekly_dates < this_monday
         if prior_mask.any():
-            last_completed_ts = weekly_idx[prior_mask][-1]
+            # Use df_weekly.index (NOT the converted one) so .loc finds it.
+            last_completed_ts = df_weekly.index[prior_mask][-1]
+            debug["weekly_baseline_ts"] = str(last_completed_ts)
             is_multi_w = df_weekly.columns.nlevels > 1
             for u in universe:
                 yt = u.yfinance_ticker
                 try:
                     if is_multi_w:
-                        o = df_weekly["Open"][yt].loc[last_completed_ts]
-                        h = df_weekly["High"][yt].loc[last_completed_ts]
-                        l = df_weekly["Low"][yt].loc[last_completed_ts]
-                        c = df_weekly["Close"][yt].loc[last_completed_ts]
+                        o = df_weekly[("Open",  yt)].loc[last_completed_ts]
+                        h = df_weekly[("High",  yt)].loc[last_completed_ts]
+                        l = df_weekly[("Low",   yt)].loc[last_completed_ts]
+                        c = df_weekly[("Close", yt)].loc[last_completed_ts]
                     else:
                         o = df_weekly["Open"].loc[last_completed_ts]
                         h = df_weekly["High"].loc[last_completed_ts]
@@ -330,7 +340,36 @@ def fetch_breadth() -> tuple[ExtendedBreadthRow, pd.DataFrame, pd.DataFrame, lis
                     last_week_rows[u.symbol] = (float(o), float(h), float(l), float(c))
                 except (KeyError, TypeError, ValueError):
                     continue
-            debug["weekly_baseline_ts"] = str(last_completed_ts.date())
+
+    debug["resolved_last_week"] = len(last_week_rows)
+
+    # ─── Fallback: ~5-trading-day-back daily baseline ───
+    # Used when the weekly fetch returns nothing usable (rate-limit,
+    # network blip, brand-new ticker without weekly history). Walks the
+    # already-fetched daily frame from the daily-OHLC pivots above.
+    if not last_week_rows:
+        for u in universe:
+            yt = u.yfinance_ticker
+            close_s = _series_for(yt, "Close")
+            if close_s is None:
+                continue
+            idx = close_s.dropna().index
+            if len(idx) >= 6:
+                wk_dt = idx[-6]
+            elif len(idx) >= 3:
+                wk_dt = idx[0]
+            else:
+                continue
+            try:
+                last_week_rows[u.symbol] = (
+                    float(_series_for(yt, "Open").loc[wk_dt]),
+                    float(_series_for(yt, "High").loc[wk_dt]),
+                    float(_series_for(yt, "Low").loc[wk_dt]),
+                    float(close_s.loc[wk_dt]),
+                )
+            except (KeyError, TypeError, ValueError, AttributeError):
+                continue
+        debug["resolved_last_week_fallback"] = len(last_week_rows)
 
     last_week_ohlc = pd.DataFrame.from_dict(
         last_week_rows, orient="index", columns=["open", "high", "low", "close"],
