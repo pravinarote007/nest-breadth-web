@@ -687,8 +687,6 @@ with tab_breadth:
             )
         else:
             st.info("Waiting for first poll to complete…")
-        with st.expander("Debug: yfinance response structure"):
-            st.json(debug)
     else:
         history_df = pd.DataFrame(st.session_state.breadth_history[::-1])
         # Format mirrors the WPF Live Breadth grid (F2, 2-decimal).
