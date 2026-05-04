@@ -463,24 +463,50 @@ if "breadth_history" not in st.session_state:
                 "Score Bear": float(r["d_score_bear"] or 0.0),
             })
 
-# One-shot intra-day backfill — when the page first opens mid-session
-# and we have no rows for today (no DuckDB cache, no prior visit), fetch
-# the day's 5-min historical breadth so the grid shows the full
-# 09:15 → now trajectory instead of starting empty. Skipped on weekends
-# and after the second visit (today_backfilled flag).
-if (market_open_now
-        and not st.session_state.get("today_backfilled")
-        and not st.session_state.breadth_history):
+# --- Intra-day backfill / gap-fill ----------------------------------
+# Fires when the grid is empty (mid-session first open) OR when the
+# latest row is more than ~6 min behind now (browser closed, reopened
+# later). The 6-min threshold tolerates Yahoo's ~15-min delay without
+# spuriously refetching during live polling.
+#
+# The Yahoo fetch is cached (5-min TTL) so multiple Streamlit reruns in
+# a short window dedup to one API call.
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _backfill_today_grid(target_date: date) -> pd.DataFrame:
+    universe = load_universe(UNIVERSE_CSV)
+    grid_df, _, _, _ = fetch_historical_breadth(target_date, universe)
+    return grid_df
+
+
+def _grid_gap_minutes(history: list, now_ist: datetime) -> float:
+    """Minutes between now and the latest row's HH:MM. Returns +inf
+    when the grid is empty so that maps to 'big gap → backfill'."""
+    if not history:
+        return float("inf")
     try:
-        universe = load_universe(UNIVERSE_CSV)
-        bf_grid, _, _, _ = fetch_historical_breadth(now_ist.date(), universe)
+        last_t = str(history[-1].get("Time", ""))
+        hh, mm = last_t.split(":")
+        last_dt = datetime.combine(
+            now_ist.date(), dtime(int(hh), int(mm)), tzinfo=IST,
+        )
+        return (now_ist - last_dt).total_seconds() / 60.0
+    except (ValueError, AttributeError, KeyError):
+        return float("inf")
+
+
+if market_open_now and _grid_gap_minutes(st.session_state.breadth_history, now_ist) > 6:
+    try:
+        bf_grid = _backfill_today_grid(now_ist.date())
         if not bf_grid.empty:
+            existing_times = {r["Time"] for r in st.session_state.breadth_history
+                              if isinstance(r.get("Time"), str)}
             for _, r in bf_grid.iterrows():
-                # `bf_grid` rows already have the same column shape as
-                # the live grid (Time HH:MM, all the BO / Score / count
-                # fields). Cast types defensively.
+                t = str(r["Time"])
+                if t in existing_times:
+                    continue
                 st.session_state.breadth_history.append({
-                    "Time":          str(r["Time"]),
+                    "Time":          t,
                     "Bull BO %":     float(r["Bull BO %"]),
                     "Abv Close %":   float(r["Abv Close %"]),
                     "Green Range %": float(r["Green Range %"]),
@@ -492,11 +518,14 @@ if (market_open_now
                     "Today Low#":    int(r["Today Low#"]),
                     "Score Bear":    float(r["Score Bear"]),
                 })
+            # Re-sort chronologically — the live tab reverses for
+            # newest-first display, but internal order matters for the
+            # last-row gap check on subsequent reruns.
+            st.session_state.breadth_history.sort(key=lambda x: str(x.get("Time", "")))
     except Exception:
         # Best-effort — if Yahoo rate-limits or returns weird shape,
         # the live polls below will still populate the grid forward.
         pass
-    st.session_state["today_backfilled"] = True
 
 if market_open_now and not today_ohlc.empty:
     # Column order matches WPF Live Breadth (Daily tab): time, then all
