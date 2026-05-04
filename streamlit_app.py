@@ -434,15 +434,22 @@ now_ist = datetime.now(IST)
 last_poll = now_ist.strftime("%Y-%m-%d %H:%M:%S")
 market_open_now = _is_market_open(now_ist)
 
-# Off-hours: don't burn Yahoo calls or write fresh history rows. Reuse
-# whatever the last successful in-session fetch produced; the F&O Breadth
-# tab below renders the frozen view with a "Market closed" banner. The
-# Historical Breadth tab is independent — user-triggered Compute, so
-# it works any time.
-if market_open_now:
+# Off-hours we don't want minute-by-minute polling, but we DO want the
+# user's first off-hours visit to land on a fully-rendered page (sentiment
+# cards + Weekly card + per-symbol grid). So:
+#   - in-hours: always fetch (cache TTL throttles to once/min via 50s cache).
+#   - off-hours, no prior session data: ONE-SHOT fetch so the Weekly tab
+#     has a baseline to render. Subsequent autorefreshes (5-min cadence)
+#     reuse the cached session_state result without re-hitting Yahoo.
+#   - off-hours, prior data already cached: reuse it (frozen view).
+need_initial_fetch = (
+    not market_open_now
+    and st.session_state.get("live_last_ext") is None
+)
+
+if market_open_now or need_initial_fetch:
     with st.spinner("Computing breadth..."):
         ext, today_ohlc, yesterday_ohlc, missing, debug = fetch_breadth()
-    # Cache the latest live result so off-hours reruns can render it.
     st.session_state["live_last_ext"] = ext
     st.session_state["live_last_today_ohlc"] = today_ohlc
     st.session_state["live_last_yesterday_ohlc"] = yesterday_ohlc
@@ -456,8 +463,8 @@ else:
     missing = st.session_state.get("live_last_missing", [])
     debug = st.session_state.get("live_last_debug", {"market_closed": True})
     if ext is None:
-        # No prior in-session live fetch (first visit outside hours).
-        # Render an empty extended row so the rest of the UI doesn't blow up.
+        # Final guard — should not be reachable given need_initial_fetch
+        # above, but keep the empty fallback so the UI doesn't blow up.
         ext = ExtendedBreadthRow(
             daily=compute_breadth_row(pd.DataFrame(), pd.DataFrame()),
             weekly=None,
