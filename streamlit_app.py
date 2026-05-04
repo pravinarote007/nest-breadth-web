@@ -463,6 +463,41 @@ if "breadth_history" not in st.session_state:
                 "Score Bear": float(r["d_score_bear"] or 0.0),
             })
 
+# One-shot intra-day backfill — when the page first opens mid-session
+# and we have no rows for today (no DuckDB cache, no prior visit), fetch
+# the day's 5-min historical breadth so the grid shows the full
+# 09:15 → now trajectory instead of starting empty. Skipped on weekends
+# and after the second visit (today_backfilled flag).
+if (market_open_now
+        and not st.session_state.get("today_backfilled")
+        and not st.session_state.breadth_history):
+    try:
+        universe = load_universe(UNIVERSE_CSV)
+        bf_grid, _, _, _ = fetch_historical_breadth(now_ist.date(), universe)
+        if not bf_grid.empty:
+            for _, r in bf_grid.iterrows():
+                # `bf_grid` rows already have the same column shape as
+                # the live grid (Time HH:MM, all the BO / Score / count
+                # fields). Cast types defensively.
+                st.session_state.breadth_history.append({
+                    "Time":          str(r["Time"]),
+                    "Bull BO %":     float(r["Bull BO %"]),
+                    "Abv Close %":   float(r["Abv Close %"]),
+                    "Green Range %": float(r["Green Range %"]),
+                    "Today High#":   int(r["Today High#"]),
+                    "Score Bull":    float(r["Score Bull"]),
+                    "Bear BO %":     float(r["Bear BO %"]),
+                    "Bel Close %":   float(r["Bel Close %"]),
+                    "Red Range %":   float(r["Red Range %"]),
+                    "Today Low#":    int(r["Today Low#"]),
+                    "Score Bear":    float(r["Score Bear"]),
+                })
+    except Exception:
+        # Best-effort — if Yahoo rate-limits or returns weird shape,
+        # the live polls below will still populate the grid forward.
+        pass
+    st.session_state["today_backfilled"] = True
+
 if market_open_now and not today_ohlc.empty:
     # Column order matches WPF Live Breadth (Daily tab): time, then all
     # bull-side metrics together, then all bear-side metrics together.
