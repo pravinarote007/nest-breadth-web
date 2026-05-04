@@ -65,7 +65,27 @@ st.set_page_config(
 )
 
 st.markdown(
-    "<style>div.block-container{padding-top:2rem}</style>",
+    """
+<style>
+/* Page padding tweak. */
+div.block-container { padding-top: 2rem; }
+
+/* Hide Streamlit Cloud's top-right toolbar buttons:
+   the Fork / GitHub / Manage-app icons in the deployed app's header.
+   Belt-and-braces: a few selectors in case Streamlit changes which
+   element holds the badge. */
+[data-testid="stToolbar"] { display: none !important; }
+[data-testid="stToolbarActions"] { display: none !important; }
+[data-testid="stDecoration"] { display: none !important; }
+.stAppDeployButton { display: none !important; }
+header [data-testid="stStatusWidget"] { display: none !important; }
+button[title="View fullscreen"] + button { display: none; }
+/* The github-corner SVG (a.k.a. "Fork me on GitHub" ribbon) some
+   Streamlit Cloud builds inject. */
+a.github-fork-ribbon, a[href*="github.com"][aria-label*="GitHub"],
+.viewerBadge_link__qRIco, [class*="viewerBadge"] { display: none !important; }
+</style>
+""",
     unsafe_allow_html=True,
 )
 
