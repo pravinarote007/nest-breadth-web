@@ -857,7 +857,7 @@ if missing:
 # Disclaimer footer.
 st.markdown("---")
 st.caption(
-    "**Disclaimer**: Free educational view powered for Traders. "
-    "Not for live trading triggers. Use a broker WebSocket for "
-    "real-time signals."
+    "**Disclaimer**: A complimentary educational insight for traders — "
+    "designed to inform, not to execute. Not a substitute for live "
+    "trading decisions."
 )
