@@ -789,13 +789,7 @@ with tab_weekly:
     )
 
     if not st.session_state.weekly_history:
-        if ext.weekly is None:
-            st.info(
-                "Weekly baseline unavailable — Yahoo returned fewer than ~5 "
-                "trading days. Try again after the first successful 15-day fetch."
-            )
-        else:
-            st.info("Waiting for first poll to complete…")
+        st.info("Waiting for first poll to complete…")
     else:
         weekly_df = pd.DataFrame(st.session_state.weekly_history[::-1])
         bull_cols = ["Bull BO %", "Abv Close %", "Green Range %", "Score Bull"]
