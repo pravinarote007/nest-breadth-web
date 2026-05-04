@@ -434,20 +434,12 @@ now_ist = datetime.now(IST)
 last_poll = now_ist.strftime("%Y-%m-%d %H:%M:%S")
 market_open_now = _is_market_open(now_ist)
 
-# Off-hours we don't want minute-by-minute polling, but we DO want the
-# user's first off-hours visit to land on a fully-rendered page (sentiment
-# cards + Weekly card + per-symbol grid). So:
-#   - in-hours: always fetch (cache TTL throttles to once/min via 50s cache).
-#   - off-hours, no prior session data: ONE-SHOT fetch so the Weekly tab
-#     has a baseline to render. Subsequent autorefreshes (5-min cadence)
-#     reuse the cached session_state result without re-hitting Yahoo.
-#   - off-hours, prior data already cached: reuse it (frozen view).
-need_initial_fetch = (
-    not market_open_now
-    and st.session_state.get("live_last_ext") is None
-)
-
-if market_open_now or need_initial_fetch:
+# Off-hours: don't burn Yahoo calls or write fresh history rows. Reuse
+# whatever the last successful in-session fetch produced; the F&O Breadth
+# tab below renders the frozen view with a "Market closed" banner. The
+# Historical Breadth tab is independent — user-triggered Compute, so it
+# works any time.
+if market_open_now:
     with st.spinner("Computing breadth..."):
         ext, today_ohlc, yesterday_ohlc, missing, debug = fetch_breadth()
     st.session_state["live_last_ext"] = ext
@@ -463,8 +455,10 @@ else:
     missing = st.session_state.get("live_last_missing", [])
     debug = st.session_state.get("live_last_debug", {"market_closed": True})
     if ext is None:
-        # Final guard — should not be reachable given need_initial_fetch
-        # above, but keep the empty fallback so the UI doesn't blow up.
+        # No prior in-session fetch (first visit outside hours). Render
+        # an empty extended row so the rest of the UI doesn't blow up;
+        # tabs show their "Waiting…" / "Weekly baseline unavailable"
+        # messages until next session open.
         ext = ExtendedBreadthRow(
             daily=compute_breadth_row(pd.DataFrame(), pd.DataFrame()),
             weekly=None,
@@ -631,16 +625,7 @@ if market_open_now and _grid_gap_minutes(st.session_state.breadth_history, now_i
         # the live polls below will still populate the grid forward.
         pass
 
-# In-hours: append current poll to the per-poll history grids.
-# Off-hours: also append once on the very first one-shot fetch so the
-# Daily / Weekly tabs aren't stuck on "Waiting for first poll…" while
-# the sentiment cards above are already populated.
-_off_hours_seed = (
-    not market_open_now
-    and not today_ohlc.empty
-    and not st.session_state.breadth_history
-)
-if (market_open_now or _off_hours_seed) and not today_ohlc.empty:
+if market_open_now and not today_ohlc.empty:
     # Column order matches WPF Live Breadth (Daily tab): time, then all
     # bull-side metrics together, then all bear-side metrics together.
     history_row = {
@@ -806,9 +791,8 @@ with tab_weekly:
     if not st.session_state.weekly_history:
         if ext.weekly is None:
             st.info(
-                "Weekly baseline unavailable — Yahoo's weekly bars haven't "
-                "yet returned a completed prior-week candle. Retry in a "
-                "few minutes."
+                "Weekly baseline unavailable — Yahoo returned fewer than ~5 "
+                "trading days. Try again after the first successful 15-day fetch."
             )
         else:
             st.info("Waiting for first poll to complete…")
