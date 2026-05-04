@@ -13,11 +13,28 @@ Caveats (shown in the UI banner too):
 """
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time as dtime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 IST = ZoneInfo("Asia/Kolkata")
+
+# NSE F&O cash session window. Outside this window the live F&O Breadth
+# tab freezes (no Yahoo polling, no row appends) — historical tab is
+# unaffected since it's user-triggered, on-demand.
+MARKET_OPEN  = dtime(9, 15)
+MARKET_CLOSE = dtime(15, 30)
+
+
+def _is_market_open(now_ist: datetime) -> bool:
+    """True if `now_ist` falls inside the NSE intraday session
+    (Mon–Fri, 09:15–15:30 IST). Holidays are not modeled — yfinance
+    returns no fresh bars on holidays anyway, so the live grid simply
+    stays frozen with the prior session's last poll."""
+    if now_ist.weekday() >= 5:                # Sat=5, Sun=6
+        return False
+    t = now_ist.time()
+    return MARKET_OPEN <= t <= MARKET_CLOSE
 
 import pandas as pd
 import streamlit as st
@@ -316,10 +333,38 @@ def _net_color(v: float) -> str:
 
 # --- Fetch + render ----------------------------------------------------
 
-last_poll = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
+now_ist = datetime.now(IST)
+last_poll = now_ist.strftime("%Y-%m-%d %H:%M:%S")
+market_open_now = _is_market_open(now_ist)
 
-with st.spinner("Computing breadth..."):
-    ext, today_ohlc, yesterday_ohlc, missing, debug = fetch_breadth()
+# Off-hours: don't burn Yahoo calls or write fresh history rows. Reuse
+# whatever the last successful in-session fetch produced; the F&O Breadth
+# tab below renders the frozen view with a "Market closed" banner. The
+# Historical Breadth tab is independent — user-triggered Compute, so
+# it works any time.
+if market_open_now:
+    with st.spinner("Computing breadth..."):
+        ext, today_ohlc, yesterday_ohlc, missing, debug = fetch_breadth()
+    # Cache the latest live result so off-hours reruns can render it.
+    st.session_state["live_last_ext"] = ext
+    st.session_state["live_last_today_ohlc"] = today_ohlc
+    st.session_state["live_last_yesterday_ohlc"] = yesterday_ohlc
+    st.session_state["live_last_missing"] = missing
+    st.session_state["live_last_debug"] = debug
+    st.session_state["live_last_poll_ist"] = last_poll
+else:
+    ext = st.session_state.get("live_last_ext")
+    today_ohlc = st.session_state.get("live_last_today_ohlc", pd.DataFrame())
+    yesterday_ohlc = st.session_state.get("live_last_yesterday_ohlc", pd.DataFrame())
+    missing = st.session_state.get("live_last_missing", [])
+    debug = st.session_state.get("live_last_debug", {"market_closed": True})
+    if ext is None:
+        # No prior in-session live fetch (first visit outside hours).
+        # Render an empty extended row so the rest of the UI doesn't blow up.
+        ext = ExtendedBreadthRow(
+            daily=compute_breadth_row(pd.DataFrame(), pd.DataFrame()),
+            weekly=None,
+        )
 
 row = ext.daily
 
@@ -418,7 +463,7 @@ if "breadth_history" not in st.session_state:
                 "Score Bear": float(r["d_score_bear"] or 0.0),
             })
 
-if not today_ohlc.empty:
+if market_open_now and not today_ohlc.empty:
     # Column order matches WPF Live Breadth (Daily tab): time, then all
     # bull-side metrics together, then all bear-side metrics together.
     history_row = {
@@ -499,11 +544,36 @@ tab_fno, tab_history = st.tabs([
 
 # ──────────────── F&O BREADTH (live) ────────────────
 with tab_fno:
+    # Off-hours banner — frozen view of the most recent in-session
+    # market-hours poll. Use the Historical Breadth tab for any past
+    # date.
+    if not market_open_now:
+        last_live_poll = st.session_state.get("live_last_poll_ist")
+        if last_live_poll:
+            st.warning(
+                f"🔒 **Market closed.** NSE F&O session runs Mon–Fri "
+                f"09:15–15:30 IST. Showing the last live poll at "
+                f"**{last_live_poll[-8:-3]} IST**. Polling resumes at "
+                f"the next session open."
+            )
+        else:
+            st.info(
+                "🔒 **Market closed.** NSE F&O session runs Mon–Fri "
+                "09:15–15:30 IST. Live polling will start at the next "
+                "session open. For past sessions use the Historical "
+                "Breadth tab."
+            )
+
     # Sentiment cards from the latest live poll.
     if not today_ohlc.empty:
         _render_sentiment_block(ext)
 
-    st.caption(f"Last poll: {last_poll} IST · Auto-refresh every {POLL_SECONDS}s")
+    if market_open_now:
+        st.caption(f"Last poll: {last_poll} IST · Auto-refresh every {POLL_SECONDS}s")
+    else:
+        st.caption(
+            f"Now: {last_poll} IST · Polling paused (off-hours)."
+        )
 
     tab_breadth, tab_weekly, tab_symbols = st.tabs([
         "📈 Daily",
