@@ -6,6 +6,12 @@ runOnSave = true
 maxUploadSize = 5
 enableCORS = false
 
+[client]
+# Hide Streamlit Cloud's top-right toolbar (Fork on GitHub / View
+# on GitHub / Manage app icons). "viewer" leaves only the small
+# hamburger menu; "minimal" hides everything except status spinner.
+toolbarMode = "viewer"
+
 [theme]
 base = "dark"
 primaryColor = "#22C55E"
