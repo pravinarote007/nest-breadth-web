@@ -631,7 +631,16 @@ if market_open_now and _grid_gap_minutes(st.session_state.breadth_history, now_i
         # the live polls below will still populate the grid forward.
         pass
 
-if market_open_now and not today_ohlc.empty:
+# In-hours: append current poll to the per-poll history grids.
+# Off-hours: also append once on the very first one-shot fetch so the
+# Daily / Weekly tabs aren't stuck on "Waiting for first poll…" while
+# the sentiment cards above are already populated.
+_off_hours_seed = (
+    not market_open_now
+    and not today_ohlc.empty
+    and not st.session_state.breadth_history
+)
+if (market_open_now or _off_hours_seed) and not today_ohlc.empty:
     # Column order matches WPF Live Breadth (Daily tab): time, then all
     # bull-side metrics together, then all bear-side metrics together.
     history_row = {
