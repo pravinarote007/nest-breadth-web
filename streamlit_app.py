@@ -108,26 +108,34 @@ st.markdown(
 
 try:
     from streamlit_autorefresh import st_autorefresh
-    # Align refresh to wall-clock minute boundaries (15:40:00, 15:41:00, …)
-    # rather than "60s from page load". Each rerun recomputes the interval
-    # to land on the next :00 second mark; once aligned, subsequent
-    # intervals are exactly 60s and stay locked to the boundary.
+    # In-session (Mon–Fri, 09:15–15:30 IST): align refreshes to wall-clock
+    # minute boundaries (15:40:00, 15:41:00, …). Each rerun recomputes
+    # the interval to land on the next :00 second mark; once aligned,
+    # subsequent intervals are exactly 60s and stay locked.
+    #
+    # Off-hours: throttle to 5-min cadence. Yahoo isn't called either way
+    # (fetch_breadth is gated by market_open_now), but the autorefresh
+    # tick itself causes a Streamlit rerun, which we suppress to save
+    # Streamlit Cloud cycles. 5 min is short enough to detect session
+    # open within a couple of refresh ticks.
     #
     # NOTE: the `key` MUST vary with the interval — `streamlit_autorefresh`
     # mounts a JS setInterval timer on first render and ignores subsequent
     # `interval` prop changes for the same key. By varying the key, we
     # force a fresh component (fresh timer) on every rerun.
     _now_ist = datetime.now(IST)
-    _seconds_to_next_min = 60 - _now_ist.second
-    if _seconds_to_next_min <= 1:
-        # Already on (or just past) the boundary — wait a full cycle so
-        # the cache TTL has time to expire before refetching.
-        _seconds_to_next_min += 60
-    _interval_ms = _seconds_to_next_min * 1000 + 200
-    st_autorefresh(
-        interval=_interval_ms,
-        key=f"poll-tick-{_now_ist.minute}-{_seconds_to_next_min}",
-    )
+    if _is_market_open(_now_ist):
+        _seconds_to_next_min = 60 - _now_ist.second
+        if _seconds_to_next_min <= 1:
+            # Already on (or just past) the boundary — wait a full cycle
+            # so the cache TTL has time to expire before refetching.
+            _seconds_to_next_min += 60
+        _interval_ms = _seconds_to_next_min * 1000 + 200
+        _ar_key = f"poll-tick-{_now_ist.minute}-{_seconds_to_next_min}"
+    else:
+        _interval_ms = 5 * 60 * 1000           # 5 min
+        _ar_key = f"offhours-tick-{_now_ist.hour}-{_now_ist.minute // 5}"
+    st_autorefresh(interval=_interval_ms, key=_ar_key)
 except ImportError:
     st.info(
         "Install `streamlit-autorefresh` (in requirements.txt) for "
